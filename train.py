@@ -24,6 +24,45 @@ from training import dataset
 from training import misc
 from metrics import metric_base
 
+if 1:
+    desc          = 'sgan'                                                                 # 包含在结果子目录名称中的描述字符串。
+    #train         = EasyDict(run_func_name='training.training_loop.training_loop')         # 训练过程设置。
+    G             = EasyDict(func_name='training.networks_stylegan.G_style')               # 生成网络架构设置。
+    D             = EasyDict(func_name='training.networks_stylegan.D_basic')               # 判别网络架构设置。
+    G_opt         = EasyDict(beta1=0.0, beta2=0.99, epsilon=1e-8)                          # 生成网络优化器设置。
+    D_opt         = EasyDict(beta1=0.0, beta2=0.99, epsilon=1e-8)                          # 判别网络优化器设置。
+    G_loss        = EasyDict(func_name='training.loss.G_logistic_nonsaturating_steer')           # 生成损失设置。
+    D_loss        = EasyDict(func_name='training.loss.D_logistic_simplegp', r1_gamma=10.0) # 判别损失设置。
+    dataset       = EasyDict()                                                             # 数据集设置，在后文确认。
+    sched         = EasyDict()                                                             # 训练计划设置，在后文确认。
+    grid          = EasyDict(size='4k', layout='random')                                   # setup_snapshot_image_grid()相关设置。
+    metrics       = [metric_base.fid50k]                                                   # 指标方法设置。
+    submit_config = dnnlib.SubmitConfig()                                                  # dnnlib.submit_run()相关设置。
+    tf_config     = {'rnd.np_random_seed': 1000}                                           # tflib.init_tf()相关设置。
+
+    # 数据集。
+    desc += '-anime';     dataset = EasyDict(tfrecord_dir='anime');                 train.mirror_augment = True
+    
+    # GPU数量。
+    desc += '-1gpu'; submit_config.num_gpus = 1; sched.minibatch_base = 4; sched.minibatch_dict = {4: 128, 8: 128, 16: 128, 32: 64, 64: 32, 128: 16, 256: 8, 512: 4}
+    #desc += '-2gpu'; submit_config.num_gpus = 2; sched.minibatch_base = 8; sched.minibatch_dict = {4: 256, 8: 256, 16: 128, 32: 64, 64: 32, 128: 16, 256: 8}
+    #desc += '-4gpu'; submit_config.num_gpus = 4; sched.minibatch_base = 16; sched.minibatch_dict = {4: 512, 8: 256, 16: 128, 32: 64, 64: 32, 128: 16}
+    #desc += '-8gpu'; submit_config.num_gpus = 8; sched.minibatch_base = 32; sched.minibatch_dict = {4: 512, 8: 256, 16: 128, 32: 64, 64: 32}
+
+    # 默认设置。
+    train.total_kimg = 25000
+    sched.lod_initial_resolution = 8
+    sched.G_lrate_dict = {128: 0.0015, 256: 0.002, 512: 0.003, 1024: 0.003}
+    sched.D_lrate_dict = EasyDict(sched.G_lrate_dict)
+
+    kwargs = EasyDict(is_train=True)
+    kwargs.update(G_args=G, D_args=D, G_opt_args=G_opt, D_opt_args=D_opt, G_loss_args=G_loss, D_loss_args=D_loss)
+    kwargs.update(dataset_args=dataset, sched_args=sched, grid_args=grid, metric_arg_list=metrics, tf_config=tf_config)
+    kwargs.submit_config = copy.deepcopy(submit_config)
+    kwargs.submit_config.run_dir_root = dnnlib.submission.submit.get_template_from_path(config.result_dir)
+    kwargs.submit_config.run_dir_ignore += config.run_dir_ignore
+    kwargs.submit_config.run_desc = desc
+
 def train(g, graph_inputs, output_dir, save_freq=100):
     # configure logging file
     logging_file = os.path.join(output_dir, 'log.txt')
@@ -86,6 +125,7 @@ def train(g, graph_inputs, output_dir, save_freq=100):
         output_dir, num_samples),
         write_meta_graph=False, write_state=False)
     return loss_values
+
 
 def joint_train(
     g, 
@@ -175,7 +215,6 @@ def joint_train(
                 feed_dict[g.lrate_in] = sched.D_lrate
                 feed_dict[g.minibatch_in] = sched.minibatch
                 curr_loss, _, Gs_op, G_op = g.sess.run([g.joint_loss, g.train_step, g.Gs_update_op, g.G_train_op], feed_dict=feed_dict)
-                Loss_sum = Loss_sum + curr_loss
                 loss_values.append(curr_loss)
             
             cur_nimg += sched.minibatch
@@ -230,6 +269,8 @@ def joint_train(
 
     ctx.close()
 
+    return loss_values
+
 
 if __name__ == '__main__':
     opt = TrainOptions().parse()
@@ -255,7 +296,7 @@ if __name__ == '__main__':
         graph_inputs = graph_util.graph_input(g, num_samples, seed=0)
 
     # train loop
-    loss_values = train(g, graph_inputs, output_dir, opt.model_save_freq)
+    loss_values = joint_train(g, graph_inputs, output_dir, opt.model_save_freq, **kwargs)
     loss_values = np.array(loss_values)
     np.save('./{}/loss_values.npy'.format(output_dir), loss_values)
     f, ax  = plt.subplots(figsize=(10, 4))
