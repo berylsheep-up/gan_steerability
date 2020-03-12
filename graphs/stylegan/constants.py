@@ -3,6 +3,13 @@ BATCH_SIZE = 4
 DIM_Z = 512 # used only for setting default arg value
 
 net_info = dict(
+    anime=dict(
+        url='anime',
+        img_size=512,
+        coco_id=None,
+        pascal_id=None,
+        is_face=True,
+    ),
     cars=dict(
         url='https://drive.google.com/uc?id=1MJ6iCfNtMIRicihwRorsM3b7mmtmK9c3',
         img_size=512,

@@ -17,7 +17,27 @@ import config
 
 class TransformGraph():
     def __init__(self, lr, walk_type, nsliders, loss_type, eps, N_f,
-                 stylegan_opts):
+                stylegan_opts,
+                is_train                = False,
+                submit_config           = None,
+                G_args                  = {},       # 生成网络的设置。
+                D_args                  = {},       # 判别网络的设置。
+                G_opt_args              = {},       # 生成网络优化器设置。
+                D_opt_args              = {},       # 判别网络优化器设置。
+                G_loss_args             = {},       # 生成损失设置。
+                D_loss_args             = {},       # 判别损失设置。
+                dataset_args            = {},       # 数据集设置。
+                
+                metric_arg_list         = [],       # 指标方法设置。
+                tf_config               = {},       # tflib.init_tf()相关设置。
+                G_smoothing_kimg        = 10.0,     # 生成器权重的运行平均值的半衰期。
+                D_repeats               = 1,        # G每迭代一次训练判别器多少次。
+                minibatch_repeats       = 4,        # 调整训练参数前要运行的minibatch的数量。
+                reset_opt_for_new_lod   = True,     # 引入新层时是否重置优化器内部状态（例如Adam时刻）？
+                total_kimg              = 15000,    # 训练的总长度，以成千上万个真实图像为统计。
+                mirror_augment          = False,    # 启用镜像增强？
+                drange_net              = [-1,1],   # 将图像数据馈送到网络时使用的动态范围。
+                 ):
 
         assert(loss_type in ['l2', 'lpips']), 'unimplemented loss'
         assert(stylegan_opts.latent in ['z', 'w']), 'unknown latent space'
@@ -25,20 +45,99 @@ class TransformGraph():
         self.dataset_name = stylegan_opts.dataset
         self.dataset = constants.net_info[stylegan_opts.dataset]
         self.latent = stylegan_opts.latent
+        self.is_train = is_train
+        self.walk_type = walk_type
+        self.N_f = N_f # NN num_steps
+        self.eps = eps # NN step_size
+        self.Nsliders = nsliders
+
         if hasattr(stylegan_opts, 'truncation_psi'):
             self.psi = stylegan_opts.truncation_psi
         else:
             self.psi = 1.0
 
         tflib.init_tf()
+        
         with dnnlib.util.open_url(self.dataset['url'], cache_dir=config.cache_dir) as f:
             # can only unpickle where dnnlib is importable, so add to syspath
-            _G, _D, Gs = pickle.load(f)
+            G, D, Gs = pickle.load(f)
 
         # input placeholders
         Nsliders = nsliders
         dim_z = self.dim_z = Gs.input_shape[1]
-        z = tf.placeholder(tf.float32, shape=(None, dim_z))
+        z = self.z = tf.placeholder(tf.float32, shape=(None, dim_z))
+
+        if is_train:
+            # judge
+            training_set = dataset.load_dataset(data_dir=config.data_dir, verbose=True, **dataset_args)
+
+            G.print_layers(); D.print_layers()
+            # 构建计算图与优化器
+            print('Building TensorFlow graph...')
+            with tf.name_scope('Inputs'), tf.device('/cpu:0'):
+                lod_in          = tf.placeholder(tf.float32, name='lod_in', shape=[])
+                # tf.placeholder:可以理解为形参，用于定于过程，具体执行时再赋具体的值。
+                lrate_in        = tf.placeholder(tf.float32, name='lrate_in', shape=[])
+                minibatch_in    = tf.placeholder(tf.int32, name='minibatch_in', shape=[])
+                minibatch_split = minibatch_in // submit_config.num_gpus
+                Gs_beta         = 0.5 ** tf.div(tf.cast(minibatch_in, tf.float32), G_smoothing_kimg * 1000.0) if G_smoothing_kimg > 0.0 else 0.0
+
+            G_opt = tflib.Optimizer(name='TrainG', learning_rate=lrate_in, **G_opt_args)
+            #D_opt = tflib.Optimizer(name='TrainD', learning_rate=lrate_in, **D_opt_args)
+            for gpu in range(submit_config.num_gpus):
+                with tf.name_scope('GPU%d' % gpu), tf.device('/gpu:%d' % gpu):
+                    G_gpu = G if gpu == 0 else G.clone(G.name + '_shadow')
+                    #D_gpu = D if gpu == 0 else D.clone(D.name + '_shadow')
+                    lod_assign_ops = [tf.assign(G_gpu.find_var('lod'), lod_in), tf.assign(D.find_var('lod'), lod_in)]
+                    #reals, labels = training_set.get_minibatch_tf()
+                    #reals = process_reals(reals, lod_in, mirror_augment, training_set.dynamic_range, drange_net)
+                    
+                    steer(G_gpu)
+
+                    with tf.name_scope('G_loss'), tf.control_dependencies(lod_assign_ops):
+                        G_loss = dnnlib.util.call_func_by_name(G=G_gpu, D=D, steer_z=self.latent_space_new_reshape, steer_x=self.target, latent=self.latent )
+                    # with tf.name_scope('D_loss'), tf.control_dependencies(lod_assign_ops):
+                    #     D_loss = dnnlib.util.call_func_by_name(G=G_gpu, D=D_gpu, opt=D_opt, training_set=training_set, minibatch_size=minibatch_split, reals=reals, labels=labels, **D_loss_args)
+                    if loss_type == 'l2':
+                        self.joint_loss = G_loss + self.loss
+                    else:
+                        self.joint_loss = G_loss + self.loss_lpips
+                    G_opt.register_gradients(tf.reduce_mean(self.joint_loss), G_gpu.trainables)
+                    # D_opt.register_gradients(tf.reduce_mean(D_loss), D_gpu.trainables)
+            G_train_op = G_opt.apply_updates()
+            # D_train_op = D_opt.apply_updates()
+
+            Gs_update_op = Gs.setup_as_moving_average_of(G, beta=Gs_beta)
+
+            train_step = tf.train.AdamOptimizer(lr).minimize(self.joint_loss, var_list=tf.trainable_variables(scope=scope), name='AdamOpter')
+
+            self.G_train_op = G_train_op
+            self.Gs_update_op = Gs_update_op
+            self.G = G
+            self.D = D
+            self.Gs = Gs 
+
+        else:
+            steer(_G)
+
+            # set the scope to be 'walk'
+            if loss_type == 'l2':
+                train_step = tf.train.AdamOptimizer(lr).minimize(
+                        self.loss, var_list=tf.trainable_variables(scope=scope), name='AdamOpter')
+            elif loss_type == 'lpips':
+                train_step = tf.train.AdamOptimizer(lr).minimize(
+                        self.loss_lpips, var_list=tf.trainable_variables(scope=scope), name='AdamOpter')
+
+        self.train_step = train_step
+
+
+    def steer(self,Gs):
+        walk_type = self.walk_type
+        N_f = self.N_f # NN num_steps
+        eps = self.eps # NN step_size
+        Nsliders = self.Nsliders
+        latent = self.latent
+        z = self.z
 
         # original output
         outputs_orig = tf.transpose(Gs.get_output_for(
@@ -156,41 +255,28 @@ class TransformGraph():
             transformed_output-target), mask), axis=(1,2,3)) \
                 / tf.reduce_sum(mask, axis=(1,2,3))
 
-        # set the scope to be 'walk'
-        if loss_type == 'l2':
-            train_step = tf.train.AdamOptimizer(lr).minimize(
-                    loss, var_list=tf.trainable_variables(scope=scope), name='AdamOpter')
-        elif loss_type == 'lpips':
-            train_step = tf.train.AdamOptimizer(lr).minimize(
-                    loss_lpips, var_list=tf.trainable_variables(scope=scope), name='AdamOpter')
-
-
-            # rescale the stylegan output range ([-1, 1]) to uint8 range [0, 255]
+        # rescale the stylegan output range ([-1, 1]) to uint8 range [0, 255]
         float_im = tf.placeholder(tf.float32, outputs_orig.shape)
         uint8_im = tflib.convert_images_to_uint8(tf.convert_to_tensor(float_im, dtype=tf.float32))
 
-        # set class vars
-        self.Nsliders = Nsliders
-        self.z = z
-        self.alpha = alpha
+        self.float_im = float_im
+        self.uint8_im = uint8_im
         self.target = target
         self.mask = mask
         self.w = w
         self.latent_space = latent_space
         self.latent_space_new = latent_space_new
+        self.latent_space_new_reshape = latent_space_new_reshape    #[None ,16, 512]
         self.transformed_output = transformed_output
         self.outputs_orig = outputs_orig
+        self.scope = scope
         self.loss = loss
         self.loss_lpips = loss_lpips
-        self.loss_l2_sample = loss_l2_sample
         self.loss_lpips_sample = loss_lpips_sample
-        self.train_step = train_step
-        self.walk_type = walk_type
-        self.N_f = N_f # NN num_steps
-        self.eps = eps # NN step_size
-        self.float_im = float_im
-        self.uint8_im = uint8_im
-        self.scope = scope
+        self.loss_l2_sample = loss_l2_sample
+        self.N_f = N_f
+        self.eps = eps
+
 
     def initialize_graph(self):
         sess = tf.get_default_session()
