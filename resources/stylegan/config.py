@@ -10,9 +10,9 @@
 #----------------------------------------------------------------------------
 # Paths.
 
-result_dir = 'results'
-data_dir = 'datasets'
-cache_dir = 'cache'
+result_dir = '/home/beryl/Documents/github/gan_steerability/resources/stylegan/results'
+data_dir = '/home/beryl/Documents/github/gan_steerability/resources/stylegan/datasets'
+cache_dir = '/home/beryl/Documents/github/gan_steerability/resources/stylegan/cache'
 run_dir_ignore = ['results', 'datasets', 'cache']
 
 #----------------------------------------------------------------------------

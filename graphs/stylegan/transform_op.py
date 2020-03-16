@@ -15,7 +15,7 @@ class ColorTransform(ColorTransform):
             return outputs_zs, np.ones(outputs_zs.shape)
 
         # if no pascal id just do normal Color get target
-        if self.dataset['pascal_id'] is None:
+        if self.dataset_args['pascal_id'] is None:
             return super().get_target_np(outputs_zs, alpha)
 
         assert(outputs_zs.shape[0] == alpha.shape[0])

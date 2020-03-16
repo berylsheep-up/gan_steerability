@@ -43,6 +43,7 @@ class RunContext(object):
 
         # pretty print the all the relevant content of the config module to a text file
         if config_module is not None:
+            print(submit_config.run_dir)
             with open(os.path.join(submit_config.run_dir, "config.txt"), "w") as f:
                 filtered_dict = {k: v for k, v in config_module.__dict__.items() if not k.startswith("_") and not isinstance(v, (types.ModuleType, types.FunctionType, types.LambdaType, submit.SubmitConfig, type))}
                 pprint.pprint(filtered_dict, stream=f, indent=4, width=200, compact=False)

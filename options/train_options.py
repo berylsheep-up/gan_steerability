@@ -55,7 +55,7 @@ class TrainOptions():
 
         if 1:
             desc          = 'sgan'                                                                 # 包含在结果子目录名称中的描述字符串。
-            #train         = EasyDict(run_func_name='training.training_loop.training_loop')         # 训练过程设置。
+            train         = EasyDict(run_func_name='train.joint_train')         # 训练过程设置。
             G             = EasyDict(func_name='training.networks_stylegan.G_style')               # 生成网络架构设置。
             D             = EasyDict(func_name='training.networks_stylegan.D_basic')               # 判别网络架构设置。
             G_opt         = EasyDict(beta1=0.0, beta2=0.99, epsilon=1e-8)                          # 生成网络优化器设置。
@@ -70,7 +70,7 @@ class TrainOptions():
             tf_config     = {'rnd.np_random_seed': 1000}                                           # tflib.init_tf()相关设置。
 
             # 数据集。
-            desc += '-anime';     dataset = EasyDict(tfrecord_dir='anime');                 train.mirror_augment = True
+            desc += '-character';     dataset = EasyDict(tfrecord_dir='character');                 #train.mirror_augment = True
             
             # GPU数量。
             desc += '-1gpu'; submit_config.num_gpus = 1; sched.minibatch_base = 4; sched.minibatch_dict = {4: 128, 8: 128, 16: 128, 32: 64, 64: 32, 128: 16, 256: 8, 512: 4}
@@ -79,7 +79,7 @@ class TrainOptions():
             #desc += '-8gpu'; submit_config.num_gpus = 8; sched.minibatch_base = 32; sched.minibatch_dict = {4: 512, 8: 256, 16: 128, 32: 64, 64: 32}
 
             # 默认设置。
-            train.total_kimg = 25000
+            train = EasyDict(total_kimg = 25000)
             sched.lod_initial_resolution = 8
             sched.G_lrate_dict = {128: 0.0015, 256: 0.002, 512: 0.003, 1024: 0.003}
             sched.D_lrate_dict = EasyDict(sched.G_lrate_dict)

@@ -14,6 +14,7 @@ sys.path.append('resources/stylegan')
 import dnnlib
 import dnnlib.tflib as tflib
 import config
+from training import dataset
 
 class TransformGraph():
     def __init__(self, lr, walk_type, nsliders, loss_type, eps, N_f,
@@ -26,8 +27,7 @@ class TransformGraph():
                 D_opt_args              = {},       # 判别网络优化器设置。
                 G_loss_args             = {},       # 生成损失设置。
                 D_loss_args             = {},       # 判别损失设置。
-                dataset_args            = {},       # 数据集设置。
-                
+                dataset_args            = {},       # 数据集设置。            
                 metric_arg_list         = [],       # 指标方法设置。
                 tf_config               = {},       # tflib.init_tf()相关设置。
                 G_smoothing_kimg        = 10.0,     # 生成器权重的运行平均值的半衰期。
@@ -37,13 +37,15 @@ class TransformGraph():
                 total_kimg              = 15000,    # 训练的总长度，以成千上万个真实图像为统计。
                 mirror_augment          = False,    # 启用镜像增强？
                 drange_net              = [-1,1],   # 将图像数据馈送到网络时使用的动态范围。
-                 ):
+                *args,
+                **kwargs
+                ):
 
         assert(loss_type in ['l2', 'lpips']), 'unimplemented loss'
         assert(stylegan_opts.latent in ['z', 'w']), 'unknown latent space'
 
         self.dataset_name = stylegan_opts.dataset
-        self.dataset = constants.net_info[stylegan_opts.dataset]
+        self.dataset_args = constants.net_info[stylegan_opts.dataset]
         self.latent = stylegan_opts.latent
         self.is_train = is_train
         self.walk_type = walk_type
@@ -58,9 +60,10 @@ class TransformGraph():
 
         tflib.init_tf()
         
-        with dnnlib.util.open_url(self.dataset['url'], cache_dir=config.cache_dir) as f:
+        with tf.device('/gpu:0'):
+            with dnnlib.util.open_url(self.dataset_args['url'], cache_dir=config.cache_dir) as f:
             # can only unpickle where dnnlib is importable, so add to syspath
-            G, D, Gs = pickle.load(f)
+                G, D, Gs = pickle.load(f)
 
         # input placeholders
         Nsliders = nsliders
@@ -71,7 +74,7 @@ class TransformGraph():
             # judge
             training_set = dataset.load_dataset(data_dir=config.data_dir, verbose=True, **dataset_args)
 
-            G.print_layers(); D.print_layers()
+            # G.print_layers(); D.print_layers()
             # 构建计算图与优化器
             print('Building TensorFlow graph...')
             with tf.name_scope('Inputs'), tf.device('/cpu:0'):
@@ -92,10 +95,15 @@ class TransformGraph():
                     #reals, labels = training_set.get_minibatch_tf()
                     #reals = process_reals(reals, lod_in, mirror_augment, training_set.dynamic_range, drange_net)
                     
-                    steer(G_gpu)
+                    self.steer(G_gpu, gpu_scope='GPU%d/'%gpu)
 
                     with tf.name_scope('G_loss'), tf.control_dependencies(lod_assign_ops):
-                        G_loss = dnnlib.util.call_func_by_name(G=G_gpu, D=D, steer_z=self.latent_space_new_reshape, steer_x=self.target, latent=self.latent )
+                        # G_loss = dnnlib.util.call_func_by_name(G=G_gpu, D=D, 
+                        #     steer_z=self.latent_space_new_reshape, 
+                        #     steer_x=self.target, 
+                        #     latent=self.latent,
+                        #     **G_loss_args )
+                        G_loss = dnnlib.util.call_func_by_name(G=G_gpu, D=D, opt=G_opt, training_set=training_set, minibatch_size=minibatch_split, **G_loss_args)
                     # with tf.name_scope('D_loss'), tf.control_dependencies(lod_assign_ops):
                     #     D_loss = dnnlib.util.call_func_by_name(G=G_gpu, D=D_gpu, opt=D_opt, training_set=training_set, minibatch_size=minibatch_split, reals=reals, labels=labels, **D_loss_args)
                     if loss_type == 'l2':
@@ -104,34 +112,40 @@ class TransformGraph():
                         self.joint_loss = G_loss + self.loss_lpips
                     G_opt.register_gradients(tf.reduce_mean(self.joint_loss), G_gpu.trainables)
                     # D_opt.register_gradients(tf.reduce_mean(D_loss), D_gpu.trainables)
+
+            train_step = tf.train.AdamOptimizer(lr).minimize(self.joint_loss, var_list=tf.trainable_variables(scope=self.scope), name='AdamOpter')
+
             G_train_op = G_opt.apply_updates()
             # D_train_op = D_opt.apply_updates()
 
             Gs_update_op = Gs.setup_as_moving_average_of(G, beta=Gs_beta)
 
-            train_step = tf.train.AdamOptimizer(lr).minimize(self.joint_loss, var_list=tf.trainable_variables(scope=scope), name='AdamOpter')
-
+            
             self.G_train_op = G_train_op
             self.Gs_update_op = Gs_update_op
             self.G = G
             self.D = D
-            self.Gs = Gs 
+            self.Gs = Gs
+            self.G_opt = G_opt
+            self.lod_in = lod_in
+            self.lrate_in = lrate_in
+            self.minibatch_in = minibatch_in
 
         else:
-            steer(_G)
+            self.steer(G)
 
             # set the scope to be 'walk'
             if loss_type == 'l2':
                 train_step = tf.train.AdamOptimizer(lr).minimize(
-                        self.loss, var_list=tf.trainable_variables(scope=scope), name='AdamOpter')
+                        self.loss, var_list=tf.trainable_variables(scope=self.scope), name='AdamOpter')
             elif loss_type == 'lpips':
                 train_step = tf.train.AdamOptimizer(lr).minimize(
-                        self.loss_lpips, var_list=tf.trainable_variables(scope=scope), name='AdamOpter')
+                        self.loss_lpips, var_list=tf.trainable_variables(scope=self.scope), name='AdamOpter')
 
         self.train_step = train_step
 
 
-    def steer(self,Gs):
+    def steer(self,Gs,gpu_scope=""):
         walk_type = self.walk_type
         N_f = self.N_f # NN num_steps
         eps = self.eps # NN step_size
@@ -155,7 +169,7 @@ class TransformGraph():
         if self.latent == 'w':
             # shape [None, 16, 512]
             latent_space_orig = Gs.components.mapping.get_output_for(z, None, is_validation=True, randomize_noise=False)
-            # flatten it: shape [None, 8092]
+            # flatten it: shape [None, 8192]
             latent_space = tf.reshape(latent_space_orig, [-1, latent_space_orig.shape[1] * latent_space_orig.shape[2]])
         else:
             # shape [None, 512]
@@ -216,7 +230,8 @@ class TransformGraph():
         elif walk_type == 'linear':
             alpha = tf.placeholder(tf.float32, shape=(None, Nsliders))
             w_shape = [1, latent_space.shape[1], Nsliders]
-            w = tf.Variable(np.random.normal(0.0, 0.1, w_shape), name=scope, dtype=np.float32)
+            with tf.name_scope(scope):
+                w = tf.Variable(np.random.normal(0.0, 0.1, w_shape),dtype=np.float32)
             N_f = None
             eps = None
         else:
@@ -269,24 +284,27 @@ class TransformGraph():
         self.latent_space_new_reshape = latent_space_new_reshape    #[None ,16, 512]
         self.transformed_output = transformed_output
         self.outputs_orig = outputs_orig
-        self.scope = scope
+        self.scope = gpu_scope+scope
         self.loss = loss
         self.loss_lpips = loss_lpips
         self.loss_lpips_sample = loss_lpips_sample
         self.loss_l2_sample = loss_l2_sample
         self.N_f = N_f
         self.eps = eps
+        self.alpha = alpha
 
 
     def initialize_graph(self):
-        sess = tf.get_default_session()
+        config = tf.ConfigProto(allow_soft_placement = True)
+        #sess = tf.get_default_session(config=config)
+        sess = tf.Session(config=config)
         global_vars = tf.global_variables()
         is_not_initialized = sess.run([tf.is_variable_initialized(var) for var in global_vars])
         not_initialized_vars = [v for (v, f) in zip(global_vars, is_not_initialized) if not f]
-        print([str(i.name) for i in not_initialized_vars]) # only for testing
+        # print([str(i.name) for i in not_initialized_vars]) # only for testing
         if len(not_initialized_vars):
             sess.run(tf.variables_initializer(not_initialized_vars))
-        print("trainable vars: {}".format(tf.trainable_variables(scope=self.scope)))
+        # print("trainable vars: {}".format(tf.trainable_variables(scope=self.scope)))
         saver = tf.train.Saver(tf.trainable_variables(scope=self.scope)) # todo double check
         self.sess = sess
         self.saver = saver
@@ -425,17 +443,17 @@ class BboxTransform(TransformGraph):
         raise NotImplementedError('Subclass should implement get_distribution_statistic')
 
     def get_distribution(self, num_samples, **kwargs):
-        if 'is_face' in self.dataset:
+        if 'is_face' in self.dataset_args:
             from utils.detectors import FaceDetector
             self.detector = FaceDetector()
-        elif self.dataset['coco_id'] is not None:
+        elif self.dataset_args['coco_id'] is not None:
             from utils.detectors import ObjectDetector
             self.detector = ObjectDetector(self.sess)
         else:
             raise NotImplementedError('Unknown detector option')
 
         # not used for faces: class_id=None
-        class_id = self.dataset['coco_id']
+        class_id = self.dataset_args['coco_id']
 
         random_seed = 0
         rnd = np.random.RandomState(random_seed)

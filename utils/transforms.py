@@ -21,10 +21,10 @@ class ColorTransform():
                 target_fn[b,:,:,i] = target_fn[b,:,:,i]+alpha[b,i]
         return target_fn, mask_out
 
-    def get_train_alpha(self, zs_batch):
+    def get_train_alpha(self, minibatch):
         ''' get an alpha for training, return in format
             alpha_val_for_graph, alpha_val_for get_target_np'''
-        batch_size = zs_batch.shape[0]
+        batch_size = minibatch
         if self.walk_type == 'linear':
             if self.channel is None:
                 alpha_val = np.random.random(size=(batch_size, self.num_channels))-0.5
@@ -98,10 +98,10 @@ class ColorLabTransform(ColorTransform):
             target_fn[b,:,:,:] = lab2rgb(target_fn[b,:,:,:])*2 - 1
         return target_fn, mask_out
 
-    def get_train_alpha(self, zs_batch):
+    def get_train_alpha(self, minibatch):
         ''' get an alpha for training, return in format
             alpha_val_for_graph, alpha_val_for get_target_np'''
-        batch_size = zs_batch.shape[0]
+        batch_size = minibatch
         if self.walk_type == 'linear':
             if self.channel is None:
                 alpha_val = np.random.random(size=(batch_size, self.num_channels))-0.5
@@ -170,7 +170,7 @@ class ZoomTransform():
         assert(np.setdiff1d(mask_out, [0., 1.]).size == 0)
         return target_fn, mask_out
 
-    def get_train_alpha(self, zs_batch):
+    def get_train_alpha(self, minibatch):
         ''' get an alpha for training, return in format
             alpha_val_for_graph, alpha_val_for_get_target_np'''
         if self.walk_type == 'linear':
@@ -179,7 +179,7 @@ class ZoomTransform():
                 alpha_val = np.random.uniform(0.25, 1.)
             else:
                 alpha_val = np.random.uniform(1., 4.)
-            batch_size = zs_batch.shape[0]
+            batch_size = minibatch
             alpha_val_for_graph = np.ones((batch_size, self.Nsliders)) \
                     * np.log(alpha_val)
             alpha_val_for_target = alpha_val
@@ -232,7 +232,7 @@ class ShiftTransform():
     def get_target_np(self, outputs_zs, alpha):
         raise NotImplementedError('Use ShiftXTransform or ShiftYTransform')
 
-    def get_train_alpha(self, zs_batch):
+    def get_train_alpha(self, minibatch):
         ''' get an alpha for training, return in format
             alpha_val_for_graph, alpha_val_for_get_target_np'''
         if self.walk_type == 'linear':
@@ -241,7 +241,7 @@ class ShiftTransform():
             if coin <= 0.5:
                 alpha_val = -alpha_val
             alpha_scaled = alpha_val / self.alpha_max
-            batch_size = zs_batch.shape[0]
+            batch_size = minibatch
             slider = np.ones((batch_size, self.Nsliders)) * alpha_scaled
             return slider, alpha_val
         elif self.walk_type == 'NNz':
@@ -338,7 +338,7 @@ class Rotate2DTransform():
         return target_fn, mask_out
 
 
-    def get_train_alpha(self, zs_batch):
+    def get_train_alpha(self, minibatch):
         ''' get an alpha for training, return in format
             alpha_val_for_graph, alpha_val_for_get_target_np'''
         if self.walk_type == 'linear':
@@ -347,7 +347,7 @@ class Rotate2DTransform():
             if coin <= 0.5:
                 alpha_val = -alpha_val
             alpha_scaled = alpha_val / self.alpha_max
-            batch_size = zs_batch.shape[0]
+            batch_size = minibatch
             slider = np.ones((batch_size, self.Nsliders)) * alpha_scaled
             return slider, alpha_val
         elif self.walk_type == 'NNz':
@@ -403,7 +403,7 @@ class Rotate3DTransform():
         return target_fn, mask_out
 
 
-    def get_train_alpha(self, zs_batch):
+    def get_train_alpha(self, minibatch):
         ''' get an alpha for training, return in format
             alpha_val_for_graph, alpha_val_for_get_target_np'''
         if self.walk_type == 'linear':
@@ -412,7 +412,7 @@ class Rotate3DTransform():
             if coin <= 0.5:
                 alpha_val = -alpha_val
             alpha_scaled = alpha_val / self.alpha_max
-            batch_size = zs_batch.shape[0]
+            batch_size = minibatch
             slider = np.ones((batch_size, self.Nsliders)) * alpha_scaled
             return slider, alpha_val
         elif self.walk_type == 'NNz':

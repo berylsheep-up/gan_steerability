@@ -19,29 +19,31 @@ import dnnlib
 import dnnlib.tflib as tflib
 from dnnlib.tflib.autosummary import autosummary
 import config
-import train
-from training import dataset
-from training import misc
+from training import dataset,misc
 from metrics import metric_base
+from dnnlib import EasyDict
+import copy
+from training import training_loop
 
 if 1:
-    desc          = 'sgan'                                                                 # 包含在结果子目录名称中的描述字符串。
-    #train         = EasyDict(run_func_name='training.training_loop.training_loop')         # 训练过程设置。
+    desc          = 'stylegan'                                                                 # 包含在结果子目录名称中的描述字符串。
+    train         = EasyDict(run_func_name='train.joint_train')         # 训练过程设置。
     G             = EasyDict(func_name='training.networks_stylegan.G_style')               # 生成网络架构设置。
     D             = EasyDict(func_name='training.networks_stylegan.D_basic')               # 判别网络架构设置。
     G_opt         = EasyDict(beta1=0.0, beta2=0.99, epsilon=1e-8)                          # 生成网络优化器设置。
     D_opt         = EasyDict(beta1=0.0, beta2=0.99, epsilon=1e-8)                          # 判别网络优化器设置。
-    G_loss        = EasyDict(func_name='training.loss.G_logistic_nonsaturating_steer')           # 生成损失设置。
+    G_loss        = EasyDict(func_name='training.loss.G_logistic_nonsaturating')           # 生成损失设置。
     D_loss        = EasyDict(func_name='training.loss.D_logistic_simplegp', r1_gamma=10.0) # 判别损失设置。
-    dataset       = EasyDict()                                                             # 数据集设置，在后文确认。
+    dataset_args  = EasyDict()                                                             # 数据集设置，在后文确认。
     sched         = EasyDict()                                                             # 训练计划设置，在后文确认。
     grid          = EasyDict(size='4k', layout='random')                                   # setup_snapshot_image_grid()相关设置。
     metrics       = [metric_base.fid50k]                                                   # 指标方法设置。
     submit_config = dnnlib.SubmitConfig()                                                  # dnnlib.submit_run()相关设置。
     tf_config     = {'rnd.np_random_seed': 1000}                                           # tflib.init_tf()相关设置。
+    train.total_kimg = 25000
 
     # 数据集。
-    desc += '-anime';     dataset = EasyDict(tfrecord_dir='anime');                 train.mirror_augment = True
+    desc += '-character';     dataset_args = EasyDict(tfrecord_dir='character');                 #train.mirror_augment = True
     
     # GPU数量。
     desc += '-1gpu'; submit_config.num_gpus = 1; sched.minibatch_base = 4; sched.minibatch_dict = {4: 128, 8: 128, 16: 128, 32: 64, 64: 32, 128: 16, 256: 8, 512: 4}
@@ -50,14 +52,14 @@ if 1:
     #desc += '-8gpu'; submit_config.num_gpus = 8; sched.minibatch_base = 32; sched.minibatch_dict = {4: 512, 8: 256, 16: 128, 32: 64, 64: 32}
 
     # 默认设置。
-    train.total_kimg = 25000
+
     sched.lod_initial_resolution = 8
     sched.G_lrate_dict = {128: 0.0015, 256: 0.002, 512: 0.003, 1024: 0.003}
     sched.D_lrate_dict = EasyDict(sched.G_lrate_dict)
 
-    kwargs = EasyDict(is_train=True)
+    kwargs = EasyDict(train)
     kwargs.update(G_args=G, D_args=D, G_opt_args=G_opt, D_opt_args=D_opt, G_loss_args=G_loss, D_loss_args=D_loss)
-    kwargs.update(dataset_args=dataset, sched_args=sched, grid_args=grid, metric_arg_list=metrics, tf_config=tf_config)
+    kwargs.update(is_train=True, dataset_args=dataset_args, sched_args=sched, grid_args=grid, metric_arg_list=metrics, tf_config=tf_config)
     kwargs.submit_config = copy.deepcopy(submit_config)
     kwargs.submit_config.run_dir_root = dnnlib.submission.submit.get_template_from_path(config.result_dir)
     kwargs.submit_config.run_dir_ignore += config.run_dir_ignore
@@ -128,10 +130,9 @@ def train(g, graph_inputs, output_dir, save_freq=100):
 
 
 def joint_train(
-    g, 
-    graph_inputs, 
-    output_dir, 
-    w_snapshot_ticks        = 1,
+    submit_config,
+    opt,
+    metric_arg_list,
     sched_args              = {},       # 训练计划设置。
     grid_args               = {},       # setup_snapshot_image_grid()相关设置。
     dataset_args            = {},       # 数据集设置。
@@ -148,9 +149,32 @@ def joint_train(
     resume_run_id           = None,     # 运行已有ID或载入已有网络pkl以从中恢复训练，None = 从头开始。
     resume_snapshot         = None,     # 要从哪恢复训练的快照的索引，None = 自动检测。
     resume_kimg             = 0.0,      # 在训练开始时给定当前训练进度。影响报告和训练计划。
-    resume_time             = 0.0;     # 在训练开始时给定统计时间。影响报告。
-
+    resume_time             = 0.0,     # 在训练开始时给定统计时间。影响报告。
+    *args,
+    **kwargs
     ):
+
+    output_dir = opt.output_dir
+
+    graph_kwargs = util.set_graph_kwargs(opt)
+
+    graph_util = importlib.import_module('graphs.' + opt.model + '.graph_util')
+    constants = importlib.import_module('graphs.' + opt.model + '.constants')
+
+    model = graphs.find_model_using_name(opt.model, opt.transform)
+    g = model(submit_config=submit_config, dataset_args=dataset_args, **graph_kwargs, **kwargs)
+    g.initialize_graph()
+
+    # create training samples
+    #num_samples = opt.num_samples
+    # if opt.model == 'biggan' and opt.biggan.category is not None:
+    #     graph_inputs = graph_util.graph_input(g, num_samples, seed=0, category=opt.biggan.category)
+    # else:
+    #     graph_inputs = graph_util.graph_input(g, num_samples, seed=0)
+
+
+
+    w_snapshot_ticks = opt.model_save_freq
 
     ctx = dnnlib.RunContext(submit_config, train)
     training_set = dataset.load_dataset(data_dir=config.data_dir, verbose=True, **dataset_args)
@@ -164,7 +188,7 @@ def joint_train(
     # 设置快照图像网格
     print('Setting up snapshot image grid...')
     grid_size, grid_reals, grid_labels, grid_latents = misc.setup_snapshot_image_grid(g.G, training_set, **grid_args)
-    sched = training_schedule(cur_nimg=total_kimg*1000, training_set=training_set, num_gpus=submit_config.num_gpus, **sched_args)
+    sched = training_loop.training_schedule(cur_nimg=total_kimg*1000, training_set=training_set, num_gpus=submit_config.num_gpus, **sched_args)
     grid_fakes = g.Gs.run(grid_latents, grid_labels, is_validation=True, minibatch_size=sched.minibatch//submit_config.num_gpus)
     # 建立运行目录
     print('Setting up run dir...')
@@ -174,7 +198,7 @@ def joint_train(
     if save_tf_graph:
         summary_log.add_graph(tf.get_default_graph())
     if save_weight_histograms:
-        G.setup_weight_histograms(); D.setup_weight_histograms()
+        g.G.setup_weight_histograms(); g.D.setup_weight_histograms()
     metrics = metric_base.MetricGroup(metric_arg_list)
     # 训练
     print('Training...\n')
@@ -184,11 +208,12 @@ def joint_train(
     cur_tick = 0
     tick_start_nimg = cur_nimg
     prev_lod = -1.0
+    loss_values = []
     while cur_nimg < total_kimg * 1000:
         if ctx.should_stop(): break
 
         # 选择训练参数并配置训练操作。
-        sched = training_schedule(cur_nimg=cur_nimg, training_set=training_set, num_gpus=submit_config.num_gpus, **sched_args)
+        sched = training_loop.training_schedule(cur_nimg=cur_nimg, training_set=training_set, num_gpus=submit_config.num_gpus, **sched_args)
         training_set.configure(sched.minibatch // submit_config.num_gpus, sched.lod)
         if reset_opt_for_new_lod:
             if np.floor(sched.lod) != np.floor(prev_lod) or np.ceil(sched.lod) != np.ceil(prev_lod):
@@ -197,17 +222,16 @@ def joint_train(
 
         # 进行训练。
         for _mb_repeat in range(minibatch_repeats):
-
-            alpha_for_graph, alpha_for_target = g.get_train_alpha(sched.minibatch)
+            alpha_for_graph, alpha_for_target = g.get_train_alpha(constants.BATCH_SIZE)
             if not isinstance(alpha_for_graph, list):
                 alpha_for_graph = [alpha_for_graph]
                 alpha_for_target = [alpha_for_target]
             for ag, at in zip(alpha_for_graph, alpha_for_target):
-                feed_dict_out = graph_inputs_batch
+                feed_dict_out = graph_util.graph_input(g, constants.BATCH_SIZE, seed=0)
                 out_zs = g.sess.run(g.outputs_orig, feed_dict_out)
 
                 target_fn, mask_out = g.get_target_np(out_zs, at)
-                feed_dict = graph_inputs_batch
+                feed_dict = feed_dict_out
                 feed_dict[g.alpha] = ag
                 feed_dict[g.target] = target_fn
                 feed_dict[g.mask] = mask_out
@@ -269,7 +293,11 @@ def joint_train(
 
     ctx.close()
 
-    return loss_values
+    loss_values = np.array(loss_values)
+    np.save('./{}/loss_values.npy'.format(output_dir), loss_values)
+    f, ax  = plt.subplots(figsize=(10, 4))
+    ax.plot(loss_values)
+    f.savefig('./{}/loss_values.png'.format(output_dir))
 
 
 if __name__ == '__main__':
@@ -277,28 +305,12 @@ if __name__ == '__main__':
 
     os.environ['CUDA_VISIBLE_DEVICES'] = opt.gpu
 
-    output_dir = opt.output_dir
-
-    graph_kwargs = util.set_graph_kwargs(opt)
-
-    graph_util = importlib.import_module('graphs.' + opt.model + '.graph_util')
-    constants = importlib.import_module('graphs.' + opt.model + '.constants')
-
-    model = graphs.find_model_using_name(opt.model, opt.transform)
-    g = model(**graph_kwargs)
-    g.initialize_graph()
-
-    # create training samples
-    num_samples = opt.num_samples
-    if opt.model == 'biggan' and opt.biggan.category is not None:
-        graph_inputs = graph_util.graph_input(g, num_samples, seed=0, category=opt.biggan.category)
-    else:
-        graph_inputs = graph_util.graph_input(g, num_samples, seed=0)
-
     # train loop
-    loss_values = joint_train(g, graph_inputs, output_dir, opt.model_save_freq, **kwargs)
-    loss_values = np.array(loss_values)
-    np.save('./{}/loss_values.npy'.format(output_dir), loss_values)
-    f, ax  = plt.subplots(figsize=(10, 4))
-    ax.plot(loss_values)
-    f.savefig('./{}/loss_values.png'.format(output_dir))
+    kwargs.update(opt=opt, **kwargs)
+    dnnlib.submit_run(**kwargs)
+    # loss_values = joint_train(g, graph_inputs, output_dir, opt.model_save_freq, **kwargs)
+    # loss_values = np.array(loss_values)
+    # np.save('./{}/loss_values.npy'.format(output_dir), loss_values)
+    # f, ax  = plt.subplots(figsize=(10, 4))
+    # ax.plot(loss_values)
+    # f.savefig('./{}/loss_values.png'.format(output_dir))

@@ -272,8 +272,10 @@ def submit_run(submit_config: SubmitConfig, run_func_name: str, **run_func_kwarg
 
     assert submit_config.submit_target == SubmitTarget.LOCAL
     if submit_config.submit_target in {SubmitTarget.LOCAL}:
+        print("here")
         run_dir = _create_run_dir_local(submit_config)
-
+        print("run_dir:", run_dir)
+        
         submit_config.task_name = "{0}-{1:05d}-{2}".format(submit_config.user_name, submit_config.run_id, submit_config.run_desc)
         submit_config.run_dir = run_dir
         _populate_run_dir(run_dir, submit_config)

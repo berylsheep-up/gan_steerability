@@ -344,7 +344,7 @@ def is_url(obj: Any) -> bool:
 
 def open_url(url: str, cache_dir: str = None, num_attempts: int = 10, verbose: bool = True) -> Any:
     """下载给定的URL并返回一个二进制模式的文件对象以访问数据。"""
-    assert is_url(url)
+    #assert is_url(url)
     assert num_attempts >= 1
 
     # Lookup from cache.

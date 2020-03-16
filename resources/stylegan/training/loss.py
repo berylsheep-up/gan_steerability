@@ -24,7 +24,7 @@ def fp32(*values):
 # WGAN和WGAN-GP损失函数。
 
 def G_wgan(G, D, opt, training_set, minibatch_size): # pylint: disable=unused-argument
-    latents = tf.random_normal([minibatch_size] + .input_shapes[0][1:])
+    latents = tf.random_normal([minibatch_size] + G.input_shapes[0][1:])
     labels = training_set.get_random_labels_tf(minibatch_size)
     fake_images_out = G.get_output_for(latents, labels, is_training=True)
     fake_scores_out = fp32(D.get_output_for(fake_images_out, labels, is_training=True))
@@ -142,7 +142,8 @@ def G_logistic_nonsaturating_steer(G, D, steer_z, steer_x, latent='z'):
     else:
         # w
         fake_images_out = G.components.synthesis.get_output_for(steer_z, is_training=True)
-
+    steer_x = tf.transpose(steer_x, [0,3,2,1])
+    print(fake_images_out.shape, steer_x.shape)
     fake_scores_out = fp32(D.get_output_for(fake_images_out, steer_x, is_training=True))
     loss = -tf.nn.softplus(fake_scores_out)
     return loss

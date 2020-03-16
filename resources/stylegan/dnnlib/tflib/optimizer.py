@@ -84,6 +84,10 @@ class Optimizer:
 
         dev = loss.device
 
+        for var in trainable_vars:
+            if var.device != dev:
+                print(var.device)
+                print(var)
         assert all(var.device == dev for var in trainable_vars)
 
         # Register device and compute gradients.
